@@ -1,0 +1,157 @@
+#nullable disable
+
+using System;
+using System.Collections.Generic;
+using System.Text;
+using GreenMagic;
+using Styx.WoWInternals;
+
+namespace Styx.Logic.Inventory.Frames.LootFrame
+{
+    /// <summary>
+    /// Handles the loot frame UI and looting operations.
+    /// </summary>
+    public class LootFrame : Frame
+    {
+        /// <summary>
+        /// Singleton instance.
+        /// </summary>
+        public static readonly LootFrame Instance = new LootFrame();
+
+        public LootFrame() : base("LootFrame")
+        {
+        }
+
+        /// <summary>
+        /// Whether loot frame is visible (has a looting target).
+        /// </summary>
+        public new bool IsVisible
+        {
+            get { return LootingObjectGuid != 0UL; }
+        }
+
+        /// <summary>
+        /// GUID of the object being looted.
+        /// Address: 12560600 (0xBFA8D8)
+        /// </summary>
+        public ulong LootingObjectGuid
+        {
+            get
+            {
+                Memory wow = ObjectManager.Wow;
+                if (wow == null) return 0UL;
+                return wow.Read<ulong>(12560600U);
+            }
+        }
+
+        /// <summary>
+        /// Number of items available to loot.
+        /// </summary>
+        public int LootItems
+        {
+            get
+            {
+                try
+                {
+                    var result = Lua.GetReturnValues("return GetNumLootItems()");
+                    if (result != null && result.Count > 0)
+                        return int.Parse(result[0]);
+                    return 0;
+                }
+                catch
+                {
+                    return 0;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Gets the item ID at the specified loot slot.
+        /// Base address: 12560020 (0xBFA694), 32 bytes per slot
+        /// </summary>
+        public uint GetItemId(int slot)
+        {
+            uint address = (uint)(12560020 + 32 * slot);
+            Memory wow = ObjectManager.Wow;
+            if (wow == null) return 0U;
+            return wow.Read<uint>(address);
+        }
+
+        /// <summary>
+        /// BUG-21 fix: Returns structured loot slot info array instead of just a string.
+        /// </summary>
+        public LootSlotInfo[] GetLootSlots()
+        {
+            int count = LootItems;
+            var slots = new LootSlotInfo[count];
+            for (int i = 0; i < count; i++)
+                slots[i] = new LootSlotInfo(i);
+            return slots;
+        }
+
+        /// <summary>
+        /// Returns structured loot slot info for the specified slot (HonorBuddy-compatible).
+        /// </summary>
+        public LootSlotInfo LootInfo(int slot)
+        {
+            return new LootSlotInfo(slot);
+        }
+
+        /// <summary>
+        /// Gets loot information string.
+        /// </summary>
+        public string LootInfo(out bool locked)
+        {
+            StringBuilder sb = new StringBuilder();
+            locked = false;
+
+            for (int i = 0; i < LootItems; i++)
+            {
+                var slotInfo = new LootSlotInfo(i);
+                locked = slotInfo.Locked;
+
+                if (slotInfo.Locked)
+                    return sb.ToString();
+
+                if (!string.IsNullOrEmpty(slotInfo.LootName))
+                {
+                    sb.AppendFormat("Trying to loot #{0} of {1} Rarity:{2}{3}",
+                        slotInfo.LootQuantity,
+                        slotInfo.LootName,
+                        slotInfo.LootRarity,
+                        (i < LootItems - 1) ? Environment.NewLine : "");
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Loots a specific slot.
+        /// </summary>
+        public void Loot(int slot)
+        {
+            Lua.DoString("LootSlot({0})", slot + 1);
+        }
+
+        /// <summary>
+        /// Loots all items and closes the loot frame.
+        /// </summary>
+        public void LootAll()
+        {
+            Lua.DoString("for i=1, GetNumLootItems() do LootSlot(i) ConfirmBindOnUse() end CloseLoot()");
+        }
+
+        /// <summary>
+        /// Closes the loot frame.
+        /// </summary>
+        public void Close()
+        {
+            if (IsVisible)
+            {
+                Lua.DoString("CloseLoot()");
+            }
+        }
+
+    }
+}

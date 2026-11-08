@@ -1,0 +1,212 @@
+using System;
+using Styx.Logic.Pathing;
+
+namespace Styx.WoWInternals.WoWObjects
+{
+    public class WoWCorpse : WoWObject
+    {
+        #region Constants - Offsets 3.3.5a
+        
+        // Position offsets for Corpse
+        private const uint CORPSE_POSITION_X_OFFSET = 0x24;
+        private const uint CORPSE_POSITION_Y_OFFSET = 0x28;
+        private const uint CORPSE_POSITION_Z_OFFSET = 0x2C;
+        
+        #endregion
+        
+        #region Descriptor Offsets - CORPSE_FIELD
+        
+        // CorpseFields pour 3.3.5a (Offsets.txt: indices × 4 + 0x18 OBJECT_FIELD_COUNT)
+        // Source: Offsets.txt ligne 5013-5022
+        private const int CORPSE_FIELD_OWNER = 0x18;          // 0x6 × 4 = 0x18 (24) - Owner GUID (8 bytes ulong)
+        private const int CORPSE_FIELD_PARTY = 0x20;          // 0x8 × 4 = 0x20 (32) - Party GUID (8 bytes ulong)
+        private const int CORPSE_FIELD_DISPLAY_ID = 0x28;     // 0xA × 4 = 0x28 (40) - Display ID (4 bytes)
+        private const int CORPSE_FIELD_ITEM = 0x2C;           // 0xB × 4 = 0x2C (44) - Equipment array (19 × 4 bytes)
+        private const int CORPSE_FIELD_BYTES_1 = 0x78;        // 0x1E × 4 = 0x78 (120) - Race, Gender, Skin, Face
+        private const int CORPSE_FIELD_BYTES_2 = 0x7C;        // 0x1F × 4 = 0x7C (124) - Hair style, hair color, facial, flags
+        private const int CORPSE_FIELD_GUILD = 0x80;          // 0x20 × 4 = 0x80 (128) - Guild ID
+        private const int CORPSE_FIELD_FLAGS = 0x84;          // 0x21 × 4 = 0x84 (132) - Corpse flags
+        private const int CORPSE_FIELD_DYNAMIC_FLAGS = 0x88;  // 0x22 × 4 = 0x88 (136) - Dynamic flags
+        
+        #endregion
+        
+        #region Constructor
+        public WoWCorpse(uint baseAddress) : base(baseAddress)
+        {
+        }
+        
+        #endregion
+        
+        #region Position Override
+        public override float X
+        {
+            get
+            {
+                if (Memory == null) return 0f;
+                return Memory.Read<float>(BaseAddress + CORPSE_POSITION_X_OFFSET);
+            }
+        }
+        public override float Y
+        {
+            get
+            {
+                if (Memory == null) return 0f;
+                return Memory.Read<float>(BaseAddress + CORPSE_POSITION_Y_OFFSET);
+            }
+        }
+        public override float Z
+        {
+            get
+            {
+                if (Memory == null) return 0f;
+                return Memory.Read<float>(BaseAddress + CORPSE_POSITION_Z_OFFSET);
+            }
+        }
+        public override WoWPoint Location
+        {
+            get
+            {
+                return new WoWPoint(X, Y, Z);
+            }
+        }
+        
+        #endregion
+        
+        #region Owner Properties
+        public ulong OwnerGuid => GetDescriptorField<ulong>(CORPSE_FIELD_OWNER);
+        public ulong PartyGuid => GetDescriptorField<ulong>(CORPSE_FIELD_PARTY);
+        public uint GuildId => GetDescriptorField<uint>(CORPSE_FIELD_GUILD);
+        
+        #endregion
+        
+        #region Display Properties
+        public uint DisplayId => GetDescriptorField<uint>(CORPSE_FIELD_DISPLAY_ID);
+        
+        private uint Bytes1 => GetDescriptorField<uint>(CORPSE_FIELD_BYTES_1);
+        
+        public byte[] Bytes2 => BitConverter.GetBytes(GetDescriptorField<uint>(CORPSE_FIELD_BYTES_2));
+        
+        public WoWRace Race
+        {
+            get
+            {
+                return (WoWRace)(Bytes1 & 0xFF);
+            }
+        }
+        public WoWGender Gender
+        {
+            get
+            {
+                return (WoWGender)((Bytes1 >> 8) & 0xFF);
+            }
+        }
+        public byte Skin
+        {
+            get
+            {
+                return (byte)((Bytes1 >> 16) & 0xFF);
+            }
+        }
+        public byte Face
+        {
+            get
+            {
+                return (byte)((Bytes1 >> 24) & 0xFF);
+            }
+        }
+        
+        #endregion
+        
+        #region Flags
+        public CorpseFlags Flags => (CorpseFlags)GetDescriptorField<uint>(CORPSE_FIELD_FLAGS);
+        public uint DynamicFlags => GetDescriptorField<uint>(CORPSE_FIELD_DYNAMIC_FLAGS);
+        
+        #endregion
+        
+        #region Helper Properties
+        public bool IsMine
+        {
+            get
+            {
+                var me = ObjectManager.Me;
+                if (me == null) return false;
+                return OwnerGuid == me.Guid;
+            }
+        }
+        public bool IsInMyParty
+        {
+            get
+            {
+                // Check if corpse owner is in party
+                if (PartyGuid == 0)
+                    return false;
+                    
+                // If it's our corpse, we're always in our party
+                if (IsMine)
+                    return true;
+                    
+                // Check if owner is a party member
+                WoWPlayer? owner = ObjectManager.GetObjectByGuid<WoWPlayer>(OwnerGuid);
+                if (owner == null)
+                    return false;
+                    
+                return owner.IsInMyPartyOrRaid;
+            }
+        }
+        public bool IsLootable
+        {
+            get
+            {
+                // Player corpses are generally not lootable (except PvP)
+                return (Flags & CorpseFlags.Lootable) != 0;
+            }
+        }
+        
+        public bool IsBones
+        {
+            get
+            {
+                return (Flags & CorpseFlags.Bones) != 0;
+            }
+        }
+        
+        public bool IsOnlyBones => (Flags & CorpseFlags.Bones) != 0;
+        
+        #endregion
+        
+        #region Equipment Display
+        public uint GetEquipmentDisplay(int slot)
+        {
+            if (slot < 0 || slot >= 19)
+                return 0;
+                
+            return GetDescriptorField<uint>(CORPSE_FIELD_ITEM + (slot * 4));
+        }
+        
+        #endregion
+        
+        #region ToString
+        public override string ToString()
+        {
+            return $"[Corpse: Owner={OwnerGuid}, Race={Race}, Gender={Gender}, Distance={Distance:F1}]";
+        }
+        
+        #endregion
+    }
+    
+    #region Enums
+    [Flags]
+    public enum CorpseFlags : uint
+    {
+        None = 0x0,
+        Bones = 0x1,           // The corpse is now a skeleton
+        Unk1 = 0x2,
+        Unk2 = 0x4,
+        HideHelm = 0x8,
+        HideCloak = 0x10,
+        Lootable = 0x20,       // Can be looted
+        Unk3 = 0x40
+    }
+    
+    #endregion
+}

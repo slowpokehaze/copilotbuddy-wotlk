@@ -1,0 +1,217 @@
+#nullable disable
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Xml.Linq;
+using Styx.Combat.CombatRoutine;
+using Styx.Database;
+using Styx.Helpers;
+using Styx.Logic.Pathing;
+using Styx.WoWInternals;
+
+namespace Styx.Logic.Profiles
+{
+    /// <summary>
+    /// Manages vendor NPCs from profiles.
+    /// </summary>
+    public class VendorManager
+    {
+        private readonly List<Vendor> _filteredVendors;
+
+        /// <summary>
+        /// Creates an empty vendor manager.
+        /// </summary>
+        public VendorManager()
+        {
+            Blacklist = new HashSet<Vendor>();
+            AllVendors = new List<Vendor>();
+            ForcedVendors = new List<Vendor>();
+        }
+
+        /// <summary>
+        /// Creates a vendor manager from XML.
+        /// </summary>
+        public VendorManager(XElement element) : this()
+        {
+            foreach (var child in element.Elements().ToList())
+            {
+                try
+                {
+                    if (child.Name != "Vendor")
+                        throw new ProfileUnknownElementException(child, "Vendor");
+
+                    AllVendors.Add(new Vendor(child));
+                }
+                catch (ProfileException ex)
+                {
+                    Logging.WriteException(ex);
+                }
+            }
+            _filteredVendors = AllVendors;
+        }
+
+        /// <summary>
+        /// Gets or sets forced vendors that override profile vendors.
+        /// </summary>
+        public List<Vendor> ForcedVendors { get; set; }
+
+        /// <summary>
+        /// Gets all vendors in the profile.
+        /// </summary>
+        public List<Vendor> AllVendors { get; private set; }
+
+        /// <summary>
+        /// Gets vendors grouped by type, excluding blacklisted.
+        /// </summary>
+        public Lookup<Vendor.VendorType, Vendor> Vendors
+        {
+            get
+            {
+                if (_filteredVendors == null)
+                    return null;
+                // Filter blacklisted vendors at query time instead of mutating _filteredVendors,
+                // so vendors that are later un-blacklisted remain available.
+                return (Lookup<Vendor.VendorType, Vendor>)_filteredVendors
+                    .Where(v => !Blacklist.Contains(v) && IsUsable(v))
+                    .ToLookup(v => v.Type);
+            }
+        }
+
+        /// <summary>
+        /// Gets the blacklisted vendors.
+        /// </summary>
+        public HashSet<Vendor> Blacklist { get; private set; }
+
+        /// <summary>
+        /// Gets the closest vendor of any type.
+        /// </summary>
+        public Vendor GetClosestVendor()
+        {
+            return GetClosestVendor(Vendor.VendorType.Unknown);
+        }
+
+        /// <summary>
+        /// A vendor with no UsableWhen is always usable, otherwise its condition decides.
+        /// HB 6.2.3 VendorManager.smethod_0 folds this into the same predicate as the blacklist.
+        /// </summary>
+        private static bool IsUsable(Vendor vendor)
+        {
+            return vendor.UsableWhen == null || vendor.UsableWhen.CallableExpression();
+        }
+
+        /// <summary>
+        /// Gets the closest vendor of a specific type.
+        /// For Sell type, also accepts Repair and Ammo vendors (they can all buy items).
+        /// </summary>
+        public Vendor GetClosestVendor(Vendor.VendorType type)
+        {
+            try
+            {
+                List<Vendor> source = null;
+
+                // Use forced vendors if available
+                if (ForcedVendors != null && ForcedVendors.Count > 0)
+                {
+                    source = ForcedVendors.Where(v => MatchesVendorType(v, type) && IsUsable(v)).ToList();
+                }
+                else
+                {
+                    if (type != Vendor.VendorType.Unknown)
+                    {
+                        // For Sell type, also accept Repair and Ammo vendors (like HB 6.2.3)
+                        if (type == Vendor.VendorType.Sell)
+                        {
+                            source = AllVendors?.Where(v => 
+                                (v.Type == Vendor.VendorType.Sell || 
+                                 v.Type == Vendor.VendorType.Repair ||
+                                 v.Type == Vendor.VendorType.Ammo) && IsUsable(v)).ToList();
+                        }
+                        else if (Vendors != null)
+                        {
+                            source = Vendors.Contains(type) ? Vendors[type].ToList() : null;
+                        }
+                    }
+                    else
+                    {
+                        source = AllVendors?.Where(IsUsable).ToList();
+                    }
+                }
+
+                if (source == null || source.Count == 0)
+                {
+                    // Only fall back to Data.bin if FindVendorsAutomatically is enabled
+                    if (Styx.Helpers.CharacterSettings.Instance.FindVendorsAutomatically)
+                    {
+                        try
+                        {
+                            HashSet<int> excluded = new HashSet<int>();
+                            foreach (Vendor blacklisted in Blacklist)
+                                excluded.Add(blacklisted.Entry);
+
+                            NpcResult nearestNpc = NpcQueries.GetNearestNpc(
+                                StyxWoW.Me.FactionTemplate,
+                                StyxWoW.Me.MapId,
+                                StyxWoW.Me.Location,
+                                type.AsNpcFlag(),
+                                excluded);
+                            if (nearestNpc != null)
+                            {
+                                return new Vendor(nearestNpc.Entry, nearestNpc.Name, type, nearestNpc.Location);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logging.Write(ex.ToString());
+                        }
+                    }
+                    return null;
+                }
+
+                WoWPoint location = ObjectManager.Me.Location;
+                WoWClass playerClass = StyxWoW.Me.Class;
+
+                if (type == Vendor.VendorType.Train)
+                {
+                    var vendor = source
+                        .Where(v => v.TrainClass == playerClass)
+                        .OrderBy(v => location.Distance(v.Location))
+                        .FirstOrDefault();
+                    return vendor;
+                }
+                else
+                {
+                    var vendor = source
+                        .Where(v => !Blacklist.Contains(v))
+                        .OrderBy(v => location.Distance(v.Location))
+                        .FirstOrDefault();
+                    return vendor;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logging.WriteException(ex);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Checks if a vendor matches the requested type.
+        /// For Sell type, also matches Repair and Ammo vendors.
+        /// </summary>
+        private static bool MatchesVendorType(Vendor vendor, Vendor.VendorType type)
+        {
+            if (type == Vendor.VendorType.Unknown)
+                return true;
+            
+            // For Sell type, also accept Repair and Ammo vendors
+            if (type == Vendor.VendorType.Sell)
+            {
+                return vendor.Type == Vendor.VendorType.Sell || 
+                       vendor.Type == Vendor.VendorType.Repair ||
+                       vendor.Type == Vendor.VendorType.Ammo;
+            }
+            
+            return vendor.Type == type;
+        }
+    }
+}

@@ -1,0 +1,157 @@
+#nullable disable
+using System;
+using System.Data.SQLite;
+using Styx;
+using Styx.Logic.Pathing;
+using Styx.WoWInternals;
+
+namespace Styx.Database
+{
+    /// <summary>
+    /// Represents an NPC result from the SQLite database.
+    /// </summary>
+    public class NpcResult : IEquatable<NpcResult>
+    {
+        /// <summary>
+        /// Creates an NpcResult from a SQLiteDataReader (HB API).
+        /// </summary>
+        internal NpcResult(SQLiteDataReader reader)
+        {
+            Entry = reader.GetInt32(reader.GetOrdinal("entry"));
+            Name = reader.GetString(reader.GetOrdinal("name"));
+            if (!reader.IsDBNull(reader.GetOrdinal("title")))
+            {
+                Title = reader.GetString(reader.GetOrdinal("title"));
+            }
+            X = reader.GetFloat(reader.GetOrdinal("x"));
+            Y = reader.GetFloat(reader.GetOrdinal("y"));
+            Z = reader.GetFloat(reader.GetOrdinal("z"));
+            NpcFlags = (uint)reader.GetInt32(reader.GetOrdinal("flag"));
+            Faction = (uint)reader.GetInt32(reader.GetOrdinal("faction"));
+            MapId = reader.GetInt32(reader.GetOrdinal("map"));
+            TrainerType = reader.GetInt32(reader.GetOrdinal("trainer_type"));
+            TrainerClass = reader.GetInt32(reader.GetOrdinal("trainer_class"));
+        }
+
+        /// <summary>
+        /// Gets or sets the NPC entry ID.
+        /// </summary>
+        public int Entry { get; set; }
+
+        /// <summary>
+        /// Gets or sets the NPC name.
+        /// </summary>
+        public string Name { get; set; }
+
+        /// <summary>
+        /// Gets or sets the NPC title.
+        /// </summary>
+        public string Title { get; set; }
+
+        /// <summary>
+        /// Gets or sets the X coordinate.
+        /// </summary>
+        public float X { get; set; }
+
+        /// <summary>
+        /// Gets or sets the Y coordinate.
+        /// </summary>
+        public float Y { get; set; }
+
+        /// <summary>
+        /// Gets or sets the Z coordinate.
+        /// </summary>
+        public float Z { get; set; }
+
+        /// <summary>
+        /// Gets or sets the NPC flags.
+        /// </summary>
+        public uint NpcFlags { get; set; }
+
+        /// <summary>
+        /// Gets or sets the faction ID.
+        /// </summary>
+        public uint Faction { get; set; }
+
+        /// <summary>
+        /// Gets or sets the map ID.
+        /// </summary>
+        public int MapId { get; set; }
+
+        /// <summary>
+        /// Gets or sets the trainer type.
+        /// </summary>
+        public int TrainerType { get; set; }
+
+        /// <summary>
+        /// Gets or sets the trainer class.
+        /// </summary>
+        public int TrainerClass { get; set; }
+
+        /// <summary>
+        /// Gets the location as a WoWPoint.
+        /// </summary>
+        public WoWPoint Location => new WoWPoint(X, Y, Z);
+
+        public bool IsHostile
+        {
+            get
+            {
+                if (Faction == 0) return false;
+                var myTemplate = StyxWoW.Me?.FactionTemplate;
+                if (myTemplate == null) return false;
+                var npcTemplate = WoWFactionTemplate.FromId(Faction);
+                if (npcTemplate == null) return false;
+                return myTemplate.GetReactionTowards(npcTemplate) < WoWUnitReaction.Neutral;
+            }
+        }
+
+        public static bool operator ==(NpcResult left, NpcResult right)
+        {
+            return Equals(left, right);
+        }
+
+        public static bool operator !=(NpcResult left, NpcResult right)
+        {
+            return !Equals(left, right);
+        }
+
+        public bool Equals(NpcResult other)
+        {
+            if (ReferenceEquals(null, other))
+                return false;
+            if (ReferenceEquals(this, other))
+                return true;
+            return other.X.Equals(X) && other.Y.Equals(Y) && other.Z.Equals(Z) && other.Entry == Entry &&
+                   Equals(other.Name, Name) && Equals(other.Title, Title) && other.MapId == MapId &&
+                   other.NpcFlags == NpcFlags && other.Faction == Faction && other.TrainerType == TrainerType &&
+                   other.TrainerClass == TrainerClass;
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (ReferenceEquals(null, obj))
+                return false;
+            if (ReferenceEquals(this, obj))
+                return true;
+            if (obj.GetType() != typeof(NpcResult))
+                return false;
+            return Equals((NpcResult)obj);
+        }
+
+        public override int GetHashCode()
+        {
+            int num = X.GetHashCode();
+            num = (num * 397) ^ Y.GetHashCode();
+            num = (num * 397) ^ Z.GetHashCode();
+            num = (num * 397) ^ Entry;
+            num = (num * 397) ^ (Name != null ? Name.GetHashCode() : 0);
+            num = (num * 397) ^ (Title != null ? Title.GetHashCode() : 0);
+            num = (num * 397) ^ MapId;
+            num = (num * 397) ^ NpcFlags.GetHashCode();
+            num = (num * 397) ^ Faction.GetHashCode();
+            num = (num * 397) ^ TrainerType;
+            return (num * 397) ^ TrainerClass;
+        }
+    }
+}
